@@ -51,10 +51,17 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
       }),
     })
 
+    // Define schema for inventory search tool
+    const itemLookupSchema = z.object({
+      query: z.string().describe("The search query"),
+      n: z.number().optional().default(5)
+        .describe("Number of results to return"),
+    })
+
     // Create a custom tool for searching furniture inventory
     const itemLookupTool = tool(
       // The actual function that will be executed when tool is called
-      async ({ query, n = 10 }) => {
+      async ({ query, n = 10 }: { query: string; n?: number }) => {
         try {
           console.log("Item lookup tool called with query:", query)
 
@@ -214,11 +221,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
       {
         name: "item_lookup",
         description: "Gathers furniture item details from the Inventory database",
-        schema: z.object({
-          query: z.string().describe("The search query"),
-          n: z.number().optional().default(5)
-            .describe("Number of results to return"),
-        }),
+        schema: itemLookupSchema,
       }
     )
 
