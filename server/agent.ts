@@ -1,6 +1,7 @@
 // Import required modules from LangChain ecosystem
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai" // For creating vector embeddings from text using Gemini
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai" // Google's Gemini AI model
+import { ChatOpenAI } from "@langchain/openai" // OpenAI-compatible client (used for Together AI fallback)
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages" // Message types for conversations
 import {
   ChatPromptTemplate,      // For creating structured prompts with placeholders
@@ -93,8 +94,8 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
           // Create vector store instance for semantic search using Google Gemini embeddings
           const vectorStore = new MongoDBAtlasVectorSearch(
             new GoogleGenerativeAIEmbeddings({
-              apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
-              model: "text-embedding-004",         // Gemini embedding model
+              apiKey: process.env.GOOGLE_API_KEY,
+              model: "gemini-embedding-001",
             }),
             dbConfig
           )
@@ -118,21 +119,89 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
             }).limit(n).toArray() // Limit results and convert to array
             
             console.log(`Text search returned ${textResults.length} results`)
+            const formatRating = (reviews: any[]) => {
+              if (!Array.isArray(reviews) || reviews.length === 0) return "★★★★★ (5/5)"
+              const avg = reviews.reduce((acc, r) => acc + (r.rating || 5), 0) / reviews.length
+              const rounded = Math.round(avg * 2) / 2
+              const full = Math.floor(rounded)
+              const hasHalf = (rounded - full) >= 0.5
+              const stars = '★'.repeat(full) + (hasHalf ? '⯨' : '') + '☆'.repeat(Math.max(0, 5 - full - (hasHalf ? 1 : 0)))
+              return `${stars} (${rounded}/5)`
+            }
+
+            const formattedTextResults = textResults.map((doc: any) => {
+              const fullPrice = doc.prices?.full_price
+              const salePrice = doc.prices?.sale_price
+              const isDiscounted = typeof salePrice === 'number' && typeof fullPrice === 'number' && salePrice < fullPrice
+              const priceDisplay = isDiscounted
+                ? `<del class="price-cut">$${Number(fullPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</del> **$${Number(salePrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD**`
+                : `**$${Number(fullPrice || salePrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD**`
+
+              return {
+                item_id: doc.item_id,
+                item_name: doc.item_name,
+                brand: doc.brand,
+                item_description: doc.item_description,
+                image_url: doc.image_url,
+                prices: doc.prices,
+                exact_price_display: priceDisplay,
+                exact_rating_display: formatRating(doc.user_reviews),
+                categories: doc.categories,
+                user_reviews: doc.user_reviews,
+                notes: doc.notes,
+              }
+            })
+
             // Return text search results as JSON string
             return JSON.stringify({
-              results: textResults,
+              results: formattedTextResults,
               searchType: "text",    // Indicate this was a text search
               query: query,
-              count: textResults.length
+              count: formattedTextResults.length
             })
           }
 
-          // Return vector search results as JSON string
+          // Return vector search results with clean metadata including image_url and exact price formatting
+          const items = result.map(([doc, score]) => {
+            const m = doc.metadata || {}
+            const fullPrice = m.prices?.full_price
+            const salePrice = m.prices?.sale_price
+            const isDiscounted = typeof salePrice === 'number' && typeof fullPrice === 'number' && salePrice < fullPrice
+            const priceDisplay = isDiscounted
+              ? `<del class="price-cut">$${Number(fullPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</del> **$${Number(salePrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD**`
+              : `**$${Number(fullPrice || salePrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD**`
+
+            const formatRating = (reviews: any[]) => {
+              if (!Array.isArray(reviews) || reviews.length === 0) return "★★★★★ (5/5)"
+              const avg = reviews.reduce((acc, r) => acc + (r.rating || 5), 0) / reviews.length
+              const rounded = Math.round(avg * 2) / 2
+              const full = Math.floor(rounded)
+              const hasHalf = (rounded - full) >= 0.5
+              const stars = '★'.repeat(full) + (hasHalf ? '⯨' : '') + '☆'.repeat(Math.max(0, 5 - full - (hasHalf ? 1 : 0)))
+              return `${stars} (${rounded}/5)`
+            }
+
+            return {
+              item_id: m.item_id,
+              item_name: m.item_name,
+              brand: m.brand,
+              item_description: m.item_description,
+              image_url: m.image_url,
+              prices: m.prices,
+              exact_price_display: priceDisplay,
+              exact_rating_display: formatRating(m.user_reviews),
+              categories: m.categories,
+              user_reviews: m.user_reviews,
+              notes: m.notes,
+              score: score,
+            }
+          })
+
           return JSON.stringify({
-            results: result,
-            searchType: "vector",   // Indicate this was a vector search
+            results: items,
+            searchType: "vector",
             query: query,
-            count: result.length
+            count: items.length
           })
           
         } catch (error: any) {
@@ -144,7 +213,6 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
             name: error.name
           })
           
-          // Return error information as JSON string
           return JSON.stringify({ 
             error: "Failed to search inventory", 
             details: error.message,
@@ -154,73 +222,117 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
       },
       // Tool metadata and schema definition
       {
-        name: "item_lookup",                                    // Tool name that the AI will reference
-        description: "Gathers furniture item details from the Inventory database", // Description for the AI
-        schema: z.object({                                      // Input validation schema
-          query: z.string().describe("The search query"),      // Required string parameter
-          n: z.number().optional().default(10)                 // Optional number parameter with default
+        name: "item_lookup",
+        description: "Gathers furniture item details from the Inventory database",
+        schema: z.object({
+          query: z.string().describe("The search query"),
+          n: z.number().optional().default(5)
             .describe("Number of results to return"),
         }),
       }
     )
 
-    // Array of all available tools (just one in this case)
+    // Array of all available tools
     const tools = [itemLookupTool]
-    // Create a tool execution node for the workflow
     const toolNode = new ToolNode<typeof GraphState.State>(tools)
+    // Initialize the primary AI model (Gemini)
+    const primaryModel = new ChatGoogleGenerativeAI({
+      model: "gemini-flash-lite-latest",
+      temperature: 0.2,
+      maxRetries: 0,
+      apiKey: process.env.GOOGLE_API_KEY,
+    }).bindTools(tools)
 
-    // Initialize the AI model (Google's Gemini)
-    const model = new ChatGoogleGenerativeAI({
-      model: "gemini-1.5-flash",         //  Use Gemini 1.5 Flash model
-      temperature: 0,                    // Deterministic responses (no randomness)
-      maxRetries: 0,                     // Disable built-in retries (we handle our own)
-      apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
-    }).bindTools(tools)                  // Bind our custom tools to the model
+    // Fallback model via Groq (OpenAI-compatible API)
+    // Used automatically when Gemini hits rate limits (429) or quota errors
+    const fallbackModel = process.env.GROQ_API_KEY
+      ? new ChatOpenAI({
+          model: "openai/gpt-oss-120b", // GPT OSS 120B via Groq
+          temperature: 0.2,
+          maxRetries: 0,
+          apiKey: process.env.GROQ_API_KEY,
+          configuration: {
+            baseURL: "https://api.groq.com/openai/v1",
+          },
+        }).bindTools(tools)
+      : null
 
-    // Decision function: determines next step in the workflow
+    // Decision function
     function shouldContinue(state: typeof GraphState.State) {
-      const messages = state.messages                               // Get all messages
-      const lastMessage = messages[messages.length - 1] as AIMessage // Get the most recent message
+      const messages = state.messages
+      const lastMessage = messages[messages.length - 1] as AIMessage
 
-      // If the AI wants to use tools, go to tools node; otherwise end
       if (lastMessage.tool_calls?.length) {
-        return "tools"  // Route to tool execution
+        return "tools"
       }
-      return "__end__"  // End the workflow
+      return "__end__"
     }
 
-    // Function that calls the AI model with retry logic
-    async function callModel(state: typeof GraphState.State) {
-      return retryWithBackoff(async () => { // Wrap in retry logic
-        // Create a structured prompt template
-        const prompt = ChatPromptTemplate.fromMessages([
-          [
-            "system", // System message defines the AI's role and behavior
-            `You are a helpful E-commerce Chatbot Agent for a furniture store. 
+    // Shared system prompt for both primary and fallback models
+    const buildPrompt = () => ChatPromptTemplate.fromMessages([
+      [
+        "system",
+        `You are ShopSmart's friendly and knowledgeable AI shopping assistant for our premium furniture store.
 
-IMPORTANT: You have access to an item_lookup tool that searches the furniture inventory database. ALWAYS use this tool when customers ask about furniture items, even if the tool returns errors or empty results.
-
-When using the item_lookup tool:
-- If it returns results, provide helpful details about the furniture items
-- If it returns an error or no results, acknowledge this and offer to help in other ways
-- If the database appears to be empty, let the customer know that inventory might be being updated
+CRITICAL INSTRUCTIONS FOR PRODUCT RECOMMENDATIONS:
+When the customer asks about products or when you find items using item_lookup:
+1. Always recommend the most relevant items (up to 2 or 3 items max per response for clarity).
+2. For EVERY recommended item, you MUST include:
+   - **Product Name** as a heading: ### [Item Name]
+   - The product image in Markdown: ![Item Name](image_url) (ALWAYS use the exact image_url from the tool result!)
+   - **Brand**: e.g., *By LuxeLiving*
+   - **Price**: You MUST copy the exact string from the tool's exact_price_display field. NEVER use tildes (~)! Do NOT write ~~$XX~~. It should show a clean price cut like <del class="price-cut">$489.00</del> **$399.50 USD** or regular price **$1,450.00 USD**.
+   - **Customer Rating**: You MUST use the rating from the tool's exact_rating_display field (e.g. ★★★★⯨ (4.5/5)). NEVER write the fraction "1/2" or "½"! Use the star symbol with the half-star symbol ⯨ instead! Include a brief quote from the reviews.
+   - **Availability**: "In Stock & Ready to Ship"
+3. Use clean Markdown formatting with clear line breaks between sections. Never output raw unformatted dumps.
+4. Keep the tone helpful, modern, and enthusiastic. End with a friendly question asking if they would like more details, dimensions, or help checking out.
 
 Current time: {time}`,
-          ],
-          new MessagesPlaceholder("messages"), // Placeholder for conversation history
-        ])
+      ],
+      new MessagesPlaceholder("messages"),
+    ])
 
-        // Fill in the prompt template with actual values
-        const formattedPrompt = await prompt.formatMessages({
-          time: new Date().toISOString(), // Current timestamp
-          messages: state.messages,       // All previous messages
-        })
+    // Helper to check if an error is a rate limit / quota exhaustion
+    function isRateLimitError(error: any): boolean {
+      return (
+        error?.status === 429 ||
+        error?.status === 503 ||
+        (error?.message && (
+          error.message.includes('quota') ||
+          error.message.includes('rate limit') ||
+          error.message.includes('RESOURCE_EXHAUSTED') ||
+          error.message.includes('overloaded')
+        ))
+      )
+    }
 
-        // Call the AI model with the formatted prompt
-        const result = await model.invoke(formattedPrompt)
-        // Return new state with the AI's response added
-        return { messages: [result] }
+    // Function that calls the AI model with fallback to Together AI on rate limits
+    async function callModel(state: typeof GraphState.State) {
+      const prompt = buildPrompt()
+      const formattedPrompt = await prompt.formatMessages({
+        time: new Date().toISOString(),
+        messages: state.messages,
       })
+
+      // Try primary Gemini model first
+      try {
+        const result = await primaryModel.invoke(formattedPrompt)
+        return { messages: [result] }
+      } catch (primaryError: any) {
+        // If rate limited and fallback is configured, switch to Together AI
+        if (isRateLimitError(primaryError) && fallbackModel) {
+          console.log(`Gemini rate limited (${primaryError?.status || primaryError?.message}). Switching to Groq fallback...`)
+          try {
+            const result = await fallbackModel.invoke(formattedPrompt)
+            return { messages: [result] }
+          } catch (fallbackError: any) {
+            console.error("Together AI fallback also failed:", fallbackError?.message)
+            throw fallbackError
+          }
+        }
+        // Non-rate-limit error or no fallback configured — rethrow
+        throw primaryError
+      }
     }
 
     // Build the workflow graph
@@ -248,10 +360,20 @@ Current time: {time}`,
     )
 
     // Extract the final response from the conversation
-    const response = finalState.messages[finalState.messages.length - 1].content
-    console.log("Agent response:", response)
+    const lastMsgContent = finalState.messages[finalState.messages.length - 1].content
+    let response = ""
+    if (typeof lastMsgContent === "string") {
+      response = lastMsgContent
+    } else if (Array.isArray(lastMsgContent)) {
+      response = lastMsgContent
+        .map((part: any) => (typeof part === "string" ? part : part?.text || ""))
+        .join("")
+    } else {
+      response = String(lastMsgContent || "")
+    }
 
-    return response // Return the AI's final response
+    console.log("Agent response:", response)
+    return response
 
   } catch (error: any) {
     // Handle different types of errors with user-friendly messages

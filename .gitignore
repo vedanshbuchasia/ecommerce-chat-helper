@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Environment variables — NEVER commit API keys
+.env
+server/.env
+client/.env
+*.env.local
+*.env.*.local
+
+# Lock files (optional - can include if you want reproducible installs)
+package-lock.json
+client/package-lock.json
+server/package-lock.json
+
+# Build output
+client/build/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Scratch/temp scripts
+server/fix-bookcase-image.js

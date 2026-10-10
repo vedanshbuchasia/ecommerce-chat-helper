@@ -16,9 +16,9 @@ const client = new MongoClient(process.env.MONGODB_ATLAS_URI as string)
 
 // Initialize Google Gemini chat model for generating synthetic furniture data
 const llm = new ChatGoogleGenerativeAI({
-  model: "gemini-1.5-flash",  // Use Gemini 1.5 Flash model
-  temperature: 0.7,               // Set creativity level (0.7 = moderately creative)
-  apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment variables
+  model: "gemini-flash-latest",
+  temperature: 0.7,
+  apiKey: process.env.GOOGLE_API_KEY,
 })
 
 // Define schema for furniture item structure using Zod validation
@@ -87,7 +87,7 @@ async function createVectorSearchIndex(): Promise<void> {
           {
             "type": "vector",
             "path": "embedding",
-            "numDimensions": 768,
+            "numDimensions": 3072,
             "similarity": "cosine"
           }
         ]
@@ -103,18 +103,128 @@ async function createVectorSearchIndex(): Promise<void> {
 }
 
 async function generateSyntheticData(): Promise<Item[]> {
-  // Create detailed prompt instructing AI to generate furniture store data
-  const prompt = `You are a helpful assistant that generates furniture store item data. Generate 10 furniture store items. Each record should include the following fields: item_id, item_name, item_description, brand, manufacturer_address, prices, categories, user_reviews, notes. Ensure variety in the data and realistic values.
+  const fallbackItems: Item[] = [
+    {
+      item_id: "FURN-001",
+      item_name: "Nordic Velvet 3-Seater Sofa",
+      item_description: "A mid-century modern 3-seater sofa upholstered in soft, stain-resistant emerald green velvet with tapered solid oak legs.",
+      brand: "NordicLiving",
+      manufacturer_address: { street: "104 Fjord Way", city: "Oslo", state: "Oslo", postal_code: "0150", country: "Norway" },
+      prices: { full_price: 1199, sale_price: 899 },
+      categories: ["Living Room", "Sofas", "Velvet", "Mid-Century"],
+      user_reviews: [
+        { review_date: "2025-01-15", rating: 5, comment: "Extremely comfortable and the emerald green color looks gorgeous in our living room!" },
+        { review_date: "2025-02-02", rating: 4, comment: "High quality velvet, easy to assemble legs." }
+      ],
+      notes: "Cushions are removable and have zip covers for easy spot cleaning."
+    },
+    {
+      item_id: "FURN-002",
+      item_name: "Artisan Solid Walnut Dining Table",
+      item_description: "Handcrafted 8-person extendable dining table carved from sustainably harvested American black walnut with a satin protective finish.",
+      brand: "Heritage Woodcraft",
+      manufacturer_address: { street: "500 Timber Road", city: "Portland", state: "OR", postal_code: "97201", country: "USA" },
+      prices: { full_price: 1450, sale_price: 1200 },
+      categories: ["Dining Room", "Tables", "Solid Wood", "Walnut"],
+      user_reviews: [
+        { review_date: "2025-01-20", rating: 5, comment: "Stunning craftsmanship. Everyone compliments it at dinner parties." }
+      ],
+      notes: "Includes 2 extension leaves stored beneath the table surface."
+    },
+    {
+      item_id: "FURN-003",
+      item_name: "ErgoComfort Executive Mesh Office Chair",
+      item_description: "Ergonomic desk chair featuring 4D adjustable armrests, dynamic lumbar support, breathable Korean mesh, and a smooth pneumatic height cylinder.",
+      brand: "ErgoPro",
+      manufacturer_address: { street: "88 Tech Boulevard", city: "Seoul", state: "Seoul", postal_code: "04524", country: "South Korea" },
+      prices: { full_price: 499, sale_price: 349 },
+      categories: ["Office", "Chairs", "Ergonomic"],
+      user_reviews: [
+        { review_date: "2025-03-10", rating: 5, comment: "Fixed my lower back pain after 8 hours of daily coding." }
+      ],
+      notes: "BIFMA certified, supports up to 350 lbs."
+    },
+    {
+      item_id: "FURN-004",
+      item_name: "Minimalist Floating Bed Frame with Headboard",
+      item_description: "Queen size low-profile platform bed with integrated warm LED under-bed ambient lighting and upholstered headboard.",
+      brand: "Zenith Home",
+      manufacturer_address: { street: "12 Sakura St", city: "Kyoto", state: "Kyoto", postal_code: "600-8001", country: "Japan" },
+      prices: { full_price: 850, sale_price: 699 },
+      categories: ["Bedroom", "Beds", "Platform", "Modern"],
+      user_reviews: [
+        { review_date: "2025-02-18", rating: 5, comment: "The floating look with subtle LED glow is futuristic and calming." }
+      ],
+      notes: "No box spring needed. Heavy-duty birch slat support system."
+    },
+    {
+      item_id: "FURN-005",
+      item_name: "Carrara Marble & Brass Coffee Table",
+      item_description: "Round 36-inch coffee table topped with authentic polished Italian Carrara marble resting on a brushed geometric brass base.",
+      brand: "Luxe Living",
+      manufacturer_address: { street: "45 Via Roma", city: "Carrara", state: "Tuscany", postal_code: "54033", country: "Italy" },
+      prices: { full_price: 680, sale_price: 520 },
+      categories: ["Living Room", "Coffee Tables", "Marble", "Brass"],
+      user_reviews: [
+        { review_date: "2025-01-29", rating: 4, comment: "Heavy and durable. Marble veining is completely unique." }
+      ],
+      notes: "Sealed with protective coating against water and wine rings."
+    },
+    {
+      item_id: "FURN-006",
+      item_name: "Industrial Metal & Reclaimed Wood Bookshelf",
+      item_description: "5-tier open shelving unit constructed with matte black powder-coated steel frame and rustic reclaimed pine shelves.",
+      brand: "Urban Loft",
+      manufacturer_address: { street: "74 Industrial Ave", city: "Detroit", state: "MI", postal_code: "48201", country: "USA" },
+      prices: { full_price: 420, sale_price: 310 },
+      categories: ["Living Room", "Office", "Storage", "Bookshelves"],
+      user_reviews: [
+        { review_date: "2025-02-14", rating: 5, comment: "Holds tons of heavy books without sagging. Beautiful rustic wood grain." }
+      ],
+      notes: "Includes anti-tip wall mounting hardware."
+    },
+    {
+      item_id: "FURN-007",
+      item_name: "Cloud Cushion Sectional Sofa",
+      item_description: "Deep-seated modular L-shaped sectional couch filled with down-feather blend cushions and wrapped in high-grade linen fabric.",
+      brand: "Haven Furniture",
+      manufacturer_address: { street: "220 Coastal Way", city: "San Diego", state: "CA", postal_code: "92101", country: "USA" },
+      prices: { full_price: 2400, sale_price: 1899 },
+      categories: ["Living Room", "Sofas", "Sectionals", "Linen"],
+      user_reviews: [
+        { review_date: "2025-03-01", rating: 5, comment: "You literally sink into it. The most relaxing sofa we have ever owned." }
+      ],
+      notes: "Modular design allows left or right configuration."
+    },
+    {
+      item_id: "FURN-008",
+      item_name: "Cast Iron & Teak Outdoor Patio Dining Set",
+      item_description: "Weatherproof 6-chair patio dining set featuring Indonesian grade-A teak tabletop and UV-resistant powder-coated aluminum framing.",
+      brand: "SunBreeze Outdoor",
+      manufacturer_address: { street: "88 Marina Blvd", city: "Denpasar", state: "Bali", postal_code: "80228", country: "Indonesia" },
+      prices: { full_price: 1800, sale_price: 1399 },
+      categories: ["Outdoor", "Patio", "Teak", "Dining Sets"],
+      user_reviews: [
+        { review_date: "2025-02-25", rating: 5, comment: "Withstood heavy rain and intense sunlight without fading or warping." }
+      ],
+      notes: "Naturally pest and moisture resistant teak."
+    }
+  ]
 
-  ${parser.getFormatInstructions()}`  // Add format instructions from parser
+  try {
+    const prompt = `You are a helpful assistant that generates furniture store item data. Generate 8 furniture store items. Each record should include the following fields: item_id, item_name, item_description, brand, manufacturer_address, prices, categories, user_reviews, notes. Ensure variety in the data and realistic values.
 
-  // Log progress to console
-  console.log("Generating synthetic data...")
+  ${parser.getFormatInstructions()}`
 
-  // Send prompt to AI and get response
-  const response = await llm.invoke(prompt)
-  // Parse AI response into structured array of Item objects
-  return parser.parse(response.content as string)
+    console.log("Generating synthetic data with Gemini...")
+    const response = await llm.invoke(prompt)
+    const parsed = await parser.parse(response.content as string)
+    if (parsed && parsed.length > 0) return parsed
+  } catch (error: any) {
+    console.log("Gemini synthetic generation skipped/failed, using curated catalog:", error.message || error)
+  }
+
+  return fallbackItems
 }
 
 // Function to create a searchable text summary from furniture item data
@@ -188,9 +298,9 @@ async function seedDatabase(): Promise<void> {
       // Create vector embeddings and store in MongoDB Atlas using Gemini
       await MongoDBAtlasVectorSearch.fromDocuments(
         [record],                    // Array containing single record
-        new GoogleGenerativeAIEmbeddings({            // Google embedding model
-          apiKey: process.env.GOOGLE_API_KEY,         // Google API key
-          modelName: "text-embedding-004",            // Google's standard embedding model (768 dimensions)
+        new GoogleGenerativeAIEmbeddings({
+          apiKey: process.env.GOOGLE_API_KEY,
+          model: "gemini-embedding-001",
         }),
         {
           collection,                // MongoDB collection reference
