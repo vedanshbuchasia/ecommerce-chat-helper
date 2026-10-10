@@ -17,29 +17,22 @@ import { MongoClient } from "mongodb"                          // MongoDB databa
 import { z } from "zod"                                        // Schema validation library
 import "dotenv/config"                                         // Load environment variables from .env file
 
-// Utility function to handle API rate limits with exponential backoff
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,    // The function to retry (generic type T for return value)
-  maxRetries = 3           // Maximum number of retry attempts (default 3)
-): Promise<T> {
-  // Loop through retry attempts
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn()    // Try to execute the function
-    } catch (error: any) {
-      // Check if it's a rate limit error (HTTP 429) and we have retries left
-      if (error.status === 429 && attempt < maxRetries) {
-        // Calculate exponential backoff delay: 2^attempt seconds, max 30 seconds
-        const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
-        console.log(`Rate limit hit. Retrying in ${delay/1000} seconds...`)
-        // Wait for the calculated delay before retrying
-        await new Promise(resolve => setTimeout(resolve, delay))
-        continue // Go to next iteration (retry)
-      }
-      throw error // If not rate limit or out of retries, throw the error
-    }
-  }
-  throw new Error("Max retries exceeded") // This should never be reached
+// Helper to check if an error is a rate limit / quota exhaustion
+export function isRateLimitError(error: any): boolean {
+  if (!error) return false
+  const status = error?.status || error?.statusCode || error?.response?.status || error?.error?.code
+  if (status === 429 || status === 503) return true
+  const msg = String(error?.message || '').toLowerCase()
+  return (
+    msg.includes('429') ||
+    msg.includes('503') ||
+    msg.includes('quota') ||
+    msg.includes('rate limit') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('resource has been exhausted') ||
+    msg.includes('overloaded') ||
+    msg.includes('too many requests')
+  )
 }
 
 // Main function that creates and runs the AI agent
@@ -79,9 +72,6 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
             })
           }
 
-          // Get sample documents for debugging purposes
-          const sampleDocs = await collection.find({}).limit(3).toArray()
-          console.log("Sample documents:", sampleDocs)
 
           // Configuration for MongoDB Atlas Vector Search
           const dbConfig = {
@@ -292,21 +282,7 @@ Current time: {time}`,
       new MessagesPlaceholder("messages"),
     ])
 
-    // Helper to check if an error is a rate limit / quota exhaustion
-    function isRateLimitError(error: any): boolean {
-      return (
-        error?.status === 429 ||
-        error?.status === 503 ||
-        (error?.message && (
-          error.message.includes('quota') ||
-          error.message.includes('rate limit') ||
-          error.message.includes('RESOURCE_EXHAUSTED') ||
-          error.message.includes('overloaded')
-        ))
-      )
-    }
-
-    // Function that calls the AI model with fallback to Together AI on rate limits
+    // Function that calls the AI model with fallback to Groq (openai/gpt-oss-120b) on rate limits
     async function callModel(state: typeof GraphState.State) {
       const prompt = buildPrompt()
       const formattedPrompt = await prompt.formatMessages({
@@ -319,14 +295,14 @@ Current time: {time}`,
         const result = await primaryModel.invoke(formattedPrompt)
         return { messages: [result] }
       } catch (primaryError: any) {
-        // If rate limited and fallback is configured, switch to Together AI
+        // If rate limited or quota exceeded, switch to Groq fallback
         if (isRateLimitError(primaryError) && fallbackModel) {
-          console.log(`Gemini rate limited (${primaryError?.status || primaryError?.message}). Switching to Groq fallback...`)
+          console.log(`Gemini rate limited (${primaryError?.status || primaryError?.message}). Switching to Groq fallback (openai/gpt-oss-120b)...`)
           try {
             const result = await fallbackModel.invoke(formattedPrompt)
             return { messages: [result] }
           } catch (fallbackError: any) {
-            console.error("Together AI fallback also failed:", fallbackError?.message)
+            console.error("Groq fallback also failed:", fallbackError?.message)
             throw fallbackError
           }
         }
